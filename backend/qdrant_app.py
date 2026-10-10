@@ -4,7 +4,6 @@ from uuid import uuid4
 
 from PIL import Image
 from sentence_transformers import SentenceTransformer
-import numpy as np
 from dotenv import load_dotenv
 import os
 
@@ -28,8 +27,8 @@ def qdrant_create_collection(name):
         vectors_config=VectorParams(size=512, distance=Distance.COSINE)
     )
 
-def qdrant_upload_photo(photo_path: str, collection_name: str, payload: dict):
-    point_id = str(uuid4())
+def qdrant_upload_photo(photo_path: str, collection_name: str, payload: dict, point_id: str | None = None):
+    point_id = point_id or str(uuid4())
     with Image.open(photo_path) as image:
         vector = model.encode(image.convert("RGB"))
 
@@ -37,11 +36,10 @@ def qdrant_upload_photo(photo_path: str, collection_name: str, payload: dict):
     operation_info = client.upsert(
         collection_name=collection_name,
         wait=True,
-        points=[
-            PointStruct(id=point_id, vector=vector.tolist(), payload=payload)
-        ]
+        points=[PointStruct(id=point_id, vector=vector.tolist(), payload=payload)],
     )
     return point_id, operation_info
+
 
 def qdrant_get_top(photo_path: str, collection_name: str, limit: int = 3):
     with Image.open(photo_path) as image:
@@ -58,7 +56,7 @@ def qdrant_get_top(photo_path: str, collection_name: str, limit: int = 3):
     for point in result.points:
         payload = point.payload or {}
         matches.append({
-            "file_id": payload.get("file_id"),
+            "file_id": str(point.id),
             "filename": payload.get("filename", "unknown"),
             "score": float(point.score),
         })

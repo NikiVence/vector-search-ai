@@ -1,6 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 import asyncio
 from sqlalchemy.exc import IntegrityError
@@ -11,9 +11,14 @@ from backend.database.db import session_maker, AsyncSession, get_session
 from backend.database.models import Collection
 from sqlalchemy import select
 from backend.schemas import CollectionCreate
-import os, shutil
+import os
 from pathlib import Path
 import logging
+
+from backend.s3_storage import (
+    upload_file_to_s3, generate_presigned_url, validate_image,
+    UnsupportedImageError, InvalidImageError,
+)
 
 from uuid import uuid4, UUID
 
@@ -34,40 +39,64 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/api/photos")
-async def upload_photo(photo: UploadFile = File(...), collection_name: UUID = Form(...), session: AsyncSession = Depends(get_session)):
-    photo_id = str(uuid4())
+MAX_FILE_SIZE = 10 * 1024 * 1024
 
-    extension = Path(photo.filename).suffix
-    path = UPLOAD_DIR / f"{photo_id}{extension}"
 
-    collection = await session.get(Collection, collection_name)
-    if not collection:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Collection with id '{collection_name}' not found."
+def save_upload(source, path):
+    source.seek(0)
+    total = 0
+    with path.open("wb") as target:
+        while chunk := source.read(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_FILE_SIZE:
+                raise HTTPException(status_code=413, detail="Image exceeds 10 MB")
+            target.write(chunk)
+
+
+def store_photo(source, path, photo_id, filename, collection):
+    # One worker owns the file until S3 and inference have finished, even if
+    # the awaiting request is cancelled. Cleanup cannot race with inference.
+    s3_key = f"photos/{photo_id}/original"
+    try:
+        save_upload(source, path)
+        upload_file_to_s3(str(path), os.environ["S3_BUCKET"], s3_key)
+        qdrant_upload_photo(
+            str(path), collection,
+            {"filename": filename, "s3_key": s3_key},
+            point_id=photo_id,
         )
+        return {"id": photo_id, "filename": filename}
+    except UnsupportedImageError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except InvalidImageError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Do not delete the S3 object: a timed-out upsert may have committed.
+        logger.exception("Photo processing failed: photo_id=%s s3_key=%s", photo_id, s3_key)
+        raise HTTPException(status_code=503, detail="Photo storage or indexing unavailable") from exc
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("Unable to remove temporary photo %s", path)
 
-    with path.open("wb") as file:
-        shutil.copyfileobj(photo.file, file)
 
-    point_id, _ = await asyncio.to_thread(
-        qdrant_upload_photo,
-        str(path),
-        payload={
-            "filename": photo.filename,
-            "image_path": str(path)
-        },
-        collection_name=collection.name,
+@app.post("/api/photos", status_code=201)
+async def upload_photo(photo: UploadFile = File(...), collection_name: UUID = Form(...), session: AsyncSession = Depends(get_session)):
+    collection = await session.get(Collection, collection_name)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    photo_id = str(uuid4())
+    path = UPLOAD_DIR / photo_id
+    return await asyncio.to_thread(
+        store_photo, photo.file, path, photo_id, photo.filename or "image", collection.name,
     )
 
-    return {
-        "id": point_id,
-        "filename": photo.filename
-    }
 
 @app.post("/api/search")
-async def search_photos(photo: UploadFile = File(...), limit: int = 3, collection_name: UUID = Form(...), session: AsyncSession = Depends(get_session)):
+async def search_photos(photo: UploadFile = File(...), limit: int = Query(3, ge=1, le=3), collection_name: UUID = Form(...), session: AsyncSession = Depends(get_session)):
     photo.file.seek(0)
 
     collection = await session.get(Collection, collection_name)
@@ -77,23 +106,40 @@ async def search_photos(photo: UploadFile = File(...), limit: int = 3, collectio
             detail=f"Collection with id '{collection_name}' not found."
         )
     
-    matches = await asyncio.to_thread(
-        qdrant_get_top,
-        photo_path=photo.file,
-        collection_name=collection.name,
-        limit=limit,
-    )
+    def search():
+        # Validate a separate buffer: Pillow may close its input file.
+        from io import BytesIO
+        photo.file.seek(0)
+        data = photo.file.read(MAX_FILE_SIZE + 1)
+        if len(data) > MAX_FILE_SIZE:
+            raise HTTPException(status_code=413, detail="Image exceeds 10 MB")
+        try:
+            validate_image(BytesIO(data))
+        except UnsupportedImageError as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except InvalidImageError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return qdrant_get_top(BytesIO(data), collection.name, limit)
+
+    matches = await asyncio.to_thread(search)
     for m in matches:
-        m["image_url"] = f"/api/photos/{m['file_id']}"
+        m["image_url"] = f"/api/photos/{m['file_id']}?collection_name={collection.id}"
 
     return {"matches": matches}
 
 @app.get("/api/photos/{photo_id}")
-async def get_photo(photo_id: str):
+async def get_photo(photo_id: UUID, collection_name: UUID, session: AsyncSession = Depends(get_session)):
+    collection = await session.get(Collection, collection_name)
+    if not collection:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Collection with id '{collection_name}' not found."
+        )
 
-    points = client.retrieve(
-        collection_name="test",
-        ids=[photo_id],
+    points = await asyncio.to_thread(
+        client.retrieve,
+        collection_name=collection.name,
+        ids=[str(photo_id)],
         with_payload=True
     )
 
@@ -103,7 +149,18 @@ async def get_photo(photo_id: str):
             detail="Photo not found"
         )
 
-    path = points[0].payload.get("image_path")
+    payload = points[0].payload or {}
+    s3_key = payload.get("s3_key")
+    if s3_key:
+        presigned_url = await asyncio.to_thread(
+            generate_presigned_url,
+            bucket_name=os.getenv("S3_BUCKET"),
+            object_name=s3_key,
+            expiration=3600
+        )
+        return RedirectResponse(url=presigned_url, status_code=302, headers={"Cache-Control": "no-store"})
+    else:
+        path = payload.get("image_path")
 
     if not path or not os.path.exists(path):
         raise HTTPException(
@@ -136,7 +193,7 @@ async def create_collection(collection: CollectionCreate, session: AsyncSession 
 
     # Create collection in Qdrant
     try:
-        qdrant_create_collection(collection.name)
+        await asyncio.to_thread(qdrant_create_collection, collection.name)
     except Exception as e:
         logger.error(f"Failed to create collection in Qdrant: {e}")
         raise HTTPException(
