@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f6f5f1">
+  <title>Frame — поиск по фотографии</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <svg class="svg-definitions" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="icon-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
+    <symbol id="icon-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 6-6 4 4 3-3 5 5"/></symbol>
+    <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+    <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></symbol>
+  </svg>
+
+  <header class="header">
+    <a class="brand" href="./" aria-label="Frame — главная"><span class="brand-icon">f<span>·</span></span>frame<span class="brand-tag">visual search</span></a>
+    <button class="button button-quiet" id="settings-button" type="button"><svg><use href="#icon-settings"/></svg><span>Подключение</span></button>
+  </header>
+
+  <main class="main">
+    <section class="intro">
+      <div><p class="eyebrow"><span class="live-dot"></span> ПОИСК ПО ИЗОБРАЖЕНИЮ</p><h1>Похожие кадры.<br><span>Без лишних слов.</span></h1><p class="intro-description">Покажи, что ищешь. Найдём три самых похожих<br class="desktop-break"> фотографии в твоей коллекции.</p></div>
+      <div class="intro-note"><span class="note-number">03</span><span>ближайших совпадения<br>по одному снимку</span></div>
+    </section>
+
+    <div class="workspace">
+      <section class="input-panel" aria-labelledby="panel-title">
+        <div class="mode-switch" role="group" aria-label="Режим работы">
+          <button class="mode-button active" id="mode-search" type="button" aria-pressed="true"><svg><use href="#icon-search"/></svg>Найти похожие</button>
+          <button class="mode-button" id="mode-upload" type="button" aria-pressed="false"><svg><use href="#icon-upload"/></svg>Добавить в базу</button>
+        </div>
+        <div class="panel-heading"><span class="step-label">01 / ИСХОДНИК</span><h2 id="panel-title">Начни с фотографии</h2><p id="panel-description">Загрузи снимок, для которого нужно найти похожие.</p></div>
+
+        <section class="collection-controls" aria-label="Коллекции">
+          <label for="collection-select">Коллекция</label>
+          <div class="collection-row"><select id="collection-select" disabled aria-describedby="collection-note"><option value="">Загрузка коллекций…</option></select><button id="collections-refresh" class="button button-quiet" type="button">Обновить</button></div>
+          <p id="collection-note">Загружаем и ищем фотографии в выбранной коллекции.</p>
+          <form id="collection-form" class="collection-row"><input id="collection-name" aria-label="Название новой коллекции" placeholder="Новая коллекция" required maxlength="100"><button id="collection-create" class="button button-quiet" type="submit">Создать</button></form>
+          <p id="collection-status" role="status" aria-live="polite"></p>
+        </section>
+        <input id="file-input" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" aria-label="Выбрать фотографию">
+        <button class="dropzone" id="dropzone" type="button" aria-describedby="file-hint">
+          <span class="drop-art" aria-hidden="true"><span class="art-back"></span><span class="art-front"><svg><use href="#icon-image"/></svg><span class="art-sun"></span></span><span class="art-plus">+</span></span>
+          <strong>Перетащи фото сюда</strong><span>или <span class="purple-text">выбери файл</span> на устройстве</span>
+          <small id="file-hint">JPG, PNG, WEBP · до 10 МБ</small>
+        </button>
+
+        <div class="preview" id="preview" hidden>
+          <div class="preview-image-wrap"><img id="preview-image" alt="Выбранная фотография"></div>
+          <div class="file-row"><svg><use href="#icon-image"/></svg><div><strong id="file-name"></strong><span id="file-size"></span></div><button class="remove-button" id="remove-file" type="button" aria-label="Убрать фотографию">×</button></div>
+        </div>
+
+        <button class="button button-primary" id="submit-button" type="button" disabled><span id="submit-label">Найти похожие</span><svg id="submit-icon"><use href="#icon-arrow"/></svg><span class="spinner" id="spinner" hidden></span></button>
+        <p class="input-note" id="input-note">Фото для поиска не добавляется в коллекцию.</p>
+        <div class="feedback" id="feedback" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <section class="results-panel" aria-labelledby="results-title" aria-busy="false" id="results-panel">
+        <div class="results-heading"><div><span class="step-label">02 / РЕЗУЛЬТАТ</span><h2 id="results-title">Похожие фотографии</h2></div><span class="count-badge" id="result-count">ТОП 3</span></div>
+        <div class="empty-state" id="empty-state"><div class="empty-symbol" aria-hidden="true"><svg><use href="#icon-search"/></svg></div><h3 id="empty-title">Здесь появятся совпадения</h3><p id="empty-description">Выбери фотографию слева и запусти поиск.<br>Результаты покажем от самых похожих.</p><div class="empty-chips" aria-hidden="true"><span>01</span><span>02</span><span>03</span></div></div>
+        <div class="results-grid" id="results-grid" hidden></div>
+        <div class="result-footnote"><span class="tiny-cross">✳</span><p>Сходство учитывает содержание и визуальные признаки.<br>Ближайший результат не обязательно будет точной копией.</p></div>
+      </section>
+    </div>
+    <section class="how-it-works" aria-label="Как это работает"><div><span>01</span><p><strong>Выбери кадр</strong>Одна фотография — отправная точка.</p></div><div><span>02</span><p><strong>Сравни похожие</strong>Три ближайших снимка из коллекции.</p></div><div><span>03</span><p><strong>Пополняй базу</strong>Добавляй фото для будущего поиска.</p></div></section>
+  </main>
+  <footer><span>frame / поиск начинается с кадра</span><span>Твоя коллекция. Твой визуальный поиск.</span></footer>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form id="settings-form"><div class="dialog-heading"><h2 id="settings-title">Подключение к серверу</h2><button class="remove-button" type="button" id="close-settings" aria-label="Закрыть">×</button></div><p>Адрес твоего FastAPI-бэкенда. Настройка сохраняется в этом браузере.</p><label for="api-url">Адрес API</label><input id="api-url" name="api-url" type="url" required placeholder="http://localhost:8000"><p class="settings-error" id="settings-error" role="alert"></p><button class="button button-primary" type="submit">Сохранить</button></form>
+  </dialog>
+</body>
+</html>
